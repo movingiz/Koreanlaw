@@ -25,17 +25,17 @@ def normalize_list(x: Any):
 
 
 def api_get(path: str, params: dict):
+    if not LAW_OC:
+        raise RuntimeError("LAW_OC environment variable is missing.")
+
     params = {
         "OC": LAW_OC,
         "type": "JSON",
         **params,
     }
-     try:
-        r = requests.get(f"{BASE}/{path}", params=params, timeout=20)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        return {"error": str(e)}
+    r = requests.get(f"{BASE}/{path}", params=params, timeout=20)
+    r.raise_for_status()
+    return r.json()
 
 def search_laws(law_name: str):
     data = api_get("lawSearch.do", {
