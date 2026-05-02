@@ -9,6 +9,12 @@ app = FastAPI(title="Korean Law Finder")
 LAW_OC = os.getenv("LAW_OC")
 BASE = "http://www.law.go.kr/DRF"
 
+@app.get("/debug")
+def debug():
+    return {
+        "LAW_OC": LAW_OC
+    }
+
 
 def normalize_list(x: Any):
     if x is None:
