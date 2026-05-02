@@ -7,7 +7,7 @@ from typing import Any
 app = FastAPI(title="Korean Law Finder")
 
 LAW_OC = os.getenv("LAW_OC")
-BASE = "http://www.law.go.kr/DRF"
+BASE = "https://www.law.go.kr/DRF"
 
 @app.get("/debug")
 def debug():
@@ -25,18 +25,17 @@ def normalize_list(x: Any):
 
 
 def api_get(path: str, params: dict):
-    if not LAW_OC:
-        raise RuntimeError("LAW_OC environment variable is missing.")
-
     params = {
         "OC": LAW_OC,
         "type": "JSON",
         **params,
     }
-    r = requests.get(f"{BASE}/{path}", params=params, timeout=20)
-    r.raise_for_status()
-    return r.json()
-
+     try:
+        r = requests.get(f"{BASE}/{path}", params=params, timeout=20)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
 
 def search_laws(law_name: str):
     data = api_get("lawSearch.do", {
