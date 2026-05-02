@@ -1,219 +1,191 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
-import os
-import requests
-from typing import Any
 
-app = FastAPI(title="Korean Law Finder")
+app = FastAPI(title="Korean Law Finder v1")
 
-LAW_OC = os.getenv("LAW_OC")
-BASE = "https://www.law.go.kr/DRF"
+HTML = r"""
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>법령 조항 검색기 v1</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 36px auto; line-height: 1.55; }
+    input, button { font-size: 16px; padding: 8px; }
+    input { width: 360px; }
+    button { cursor: pointer; }
+    .box { border: 1px solid #ddd; border-radius: 10px; padding: 16px; margin: 14px 0; }
+    .law-title { font-size: 20px; font-weight: 700; margin-top: 28px; border-top: 2px solid #222; padding-top: 18px; }
+    pre { white-space: pre-wrap; background: #f8f8f8; padding: 12px; border-radius: 8px; overflow-wrap: anywhere; }
+    .muted { color: #666; }
+    .error { color: #b00020; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h2>법령 조항 검색기 v1</h2>
+  <p class="muted">
+    Render 서버가 아니라, 현재 브라우저가 국가법령정보 API를 직접 호출합니다.
+  </p>
 
-@app.get("/debug")
-def debug():
-    return {
-        "LAW_OC": LAW_OC
+  <div class="box">
+    <p>
+      API 키(OC)<br>
+      <input id="oc" placeholder="예: movingizapi" />
+    </p>
+    <p>
+      법령명<br>
+      <input id="lawName" value="도로교통법" />
+    </p>
+    <p>
+      키워드<br>
+      <input id="keyword" value="어린이" />
+    </p>
+    <button onclick="runSearch()">검색</button>
+  </div>
+
+  <div id="status" class="muted"></div>
+  <div id="results"></div>
+
+<script>
+const BASE = "https://www.law.go.kr/DRF";
+
+function esc(s) {
+  return String(s ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function asList(x) {
+  if (!x) return [];
+  return Array.isArray(x) ? x : [x];
+}
+
+function flatten(obj) {
+  if (obj === null || obj === undefined) return "";
+  if (typeof obj === "string" || typeof obj === "number") return String(obj);
+  if (Array.isArray(obj)) return obj.map(flatten).join(" ");
+  if (typeof obj === "object") return Object.values(obj).map(flatten).join(" ");
+  return String(obj);
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  return await res.json();
+}
+
+async function searchLaws(oc, lawName) {
+  const url = `${BASE}/lawSearch.do?OC=${encodeURIComponent(oc)}&target=law&type=JSON&query=${encodeURIComponent(lawName)}&display=20`;
+  const data = await fetchJson(url);
+  return asList(data?.LawSearch?.law);
+}
+
+async function getLawText(oc, mst) {
+  const url = `${BASE}/lawService.do?OC=${encodeURIComponent(oc)}&target=law&type=JSON&MST=${encodeURIComponent(mst)}`;
+  return await fetchJson(url);
+}
+
+function classifyRelatedLaws(laws, baseName) {
+  return laws.filter(law => {
+    const name = law["법령명한글"] || "";
+    return (
+      name === baseName ||
+      name === `${baseName} 시행령` ||
+      name === `${baseName} 시행규칙`
+    );
+  });
+}
+
+function extractArticles(lawJson, keyword) {
+  const units = asList(lawJson?.법령?.조문?.조문단위);
+  const out = [];
+
+  for (const art of units) {
+    if (art["조문여부"] !== "조문") continue;
+
+    const allText = flatten(art);
+    if (!allText.includes(keyword)) continue;
+
+    out.push({
+      no: art["조문번호"] || "",
+      title: art["조문제목"] || "",
+      body: allText.slice(0, 5000)
+    });
+  }
+
+  return out;
+}
+
+async function runSearch() {
+  const oc = document.getElementById("oc").value.trim();
+  const lawName = document.getElementById("lawName").value.trim();
+  const keyword = document.getElementById("keyword").value.trim();
+  const status = document.getElementById("status");
+  const results = document.getElementById("results");
+
+  results.innerHTML = "";
+  status.innerHTML = "";
+
+  if (!oc || !lawName || !keyword) {
+    status.innerHTML = "<span class='error'>API 키, 법령명, 키워드를 모두 입력하세요.</span>";
+    return;
+  }
+
+  try {
+    status.textContent = "법령 목록 검색 중...";
+    const laws = await searchLaws(oc, lawName);
+    const related = classifyRelatedLaws(laws, lawName);
+
+    if (related.length === 0) {
+      results.innerHTML = `<p class="error">관련 법령을 찾지 못했습니다.</p>
+      <pre>${esc(JSON.stringify(laws, null, 2))}</pre>`;
+      status.textContent = "";
+      return;
     }
 
+    let html = `<p>검색된 관련 법령: ${related.length}건</p>`;
 
-def normalize_list(x: Any):
-    if x is None:
-        return []
-    if isinstance(x, list):
-        return x
-    return [x]
+    for (const law of related) {
+      const name = law["법령명한글"];
+      const mst = law["법령일련번호"];
+      const lawType = law["법령구분명"] || "";
+      const eff = law["시행일자"] || "";
+      const prom = law["공포일자"] || "";
 
+      status.textContent = `${name} 본문 조회 중...`;
 
-def api_get(path: str, params: dict):
-    if not LAW_OC:
-        raise RuntimeError("LAW_OC environment variable is missing.")
+      const lawJson = await getLawText(oc, mst);
+      const articles = extractArticles(lawJson, keyword);
 
-    params = {
-        "OC": LAW_OC,
-        "type": "JSON",
-        **params,
+      html += `<div class="law-title">${esc(name)} (${esc(lawType)})</div>`;
+      html += `<p class="muted">MST: ${esc(mst)} / 시행일자: ${esc(eff)} / 공포일자: ${esc(prom)}</p>`;
+
+      if (articles.length === 0) {
+        html += `<p>키워드 "${esc(keyword)}"가 포함된 조문을 찾지 못했습니다.</p>`;
+      } else {
+        html += `<p>매칭 조문: ${articles.length}건</p>`;
+        for (const a of articles) {
+          html += `<div class="box">
+            <h3>제${esc(a.no)}조 ${esc(a.title)}</h3>
+            <pre>${esc(a.body)}</pre>
+          </div>`;
+        }
+      }
     }
-    r = requests.get(f"{BASE}/{path}", params=params, timeout=20)
-    r.raise_for_status()
-    return r.json()
 
-def search_laws(law_name: str):
-    data = api_get("lawSearch.do", {
-        "target": "law",
-        "query": law_name,
-        "display": 20,
-    })
-    laws = data.get("LawSearch", {}).get("law", [])
-    return normalize_list(laws)
-
-
-def get_law_text(mst: str):
-    return api_get("lawService.do", {
-        "target": "law",
-        "MST": mst,
-    })
-
-
-def flatten_text(obj: Any) -> str:
-    if obj is None:
-        return ""
-    if isinstance(obj, str):
-        return obj
-    if isinstance(obj, dict):
-        return " ".join(flatten_text(v) for v in obj.values())
-    if isinstance(obj, list):
-        return " ".join(flatten_text(v) for v in obj)
-    return str(obj)
-
-
-def extract_articles(law_json: dict, keyword: str):
-    law = law_json.get("법령", {})
-    articles = law.get("조문", {}).get("조문단위", [])
-    articles = normalize_list(articles)
-
-    results = []
-
-    for art in articles:
-        if art.get("조문여부") != "조문":
-            continue
-
-        full_text = flatten_text(art)
-
-        if keyword not in full_text:
-            continue
-
-        article_no = art.get("조문번호", "")
-        article_title = art.get("조문제목", "")
-        article_body = art.get("조문내용", "")
-
-        results.append({
-            "조문번호": article_no,
-            "조문제목": article_title,
-            "조문내용": article_body,
-            "전체본문": full_text[:4000],
-        })
-
-    return results
-
-
-def classify_related_laws(laws: list, base_name: str):
-    wanted = []
-
-    for law in laws:
-        name = law.get("법령명한글", "")
-
-        if name == base_name:
-            wanted.append(law)
-        elif name == f"{base_name} 시행령":
-            wanted.append(law)
-        elif name == f"{base_name} 시행규칙":
-            wanted.append(law)
-
-    return wanted
-
+    results.innerHTML = html;
+    status.textContent = "완료";
+  } catch (e) {
+    status.innerHTML = `<span class="error">오류: ${esc(e.message)}</span>
+      <p class="muted">브라우저에서 법제처 API 직접 호출이 CORS 또는 네트워크 정책에 막혔을 수 있습니다.</p>`;
+  }
+}
+</script>
+</body>
+</html>
+"""
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return """
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <title>법령 조항 검색기</title>
-      </head>
-      <body style="font-family: sans-serif; max-width: 900px; margin: 40px auto;">
-        <h2>법령 조항 검색기</h2>
-        <form action="/find" method="get">
-          <p>
-            법령명<br/>
-            <input name="law_name" value="도로교통법" style="width: 400px; padding: 8px;" />
-          </p>
-          <p>
-            키워드<br/>
-            <input name="keyword" value="어린이" style="width: 400px; padding: 8px;" />
-          </p>
-          <button type="submit" style="padding: 8px 16px;">검색</button>
-        </form>
-      </body>
-    </html>
-    """
-
-
-@app.get("/find", response_class=HTMLResponse)
-def find_articles(
-    law_name: str = Query(...),
-    keyword: str = Query(...),
-):
-    laws = search_laws(law_name)
-    related = classify_related_laws(laws, law_name)
-
-    if not related:
-        return f"<h3>관련 법령을 찾지 못했습니다: {law_name}</h3>"
-
-    html = [
-        "<html><head><meta charset='utf-8'><title>검색 결과</title></head>",
-        "<body style='font-family: sans-serif; max-width: 1000px; margin: 40px auto;'>",
-        f"<h2>검색 결과: {law_name} / 키워드: {keyword}</h2>",
-        "<p><a href='/'>다시 검색</a></p>",
-    ]
-
-    for law in related:
-        name = law.get("법령명한글")
-        mst = law.get("법령일련번호")
-        law_type = law.get("법령구분명")
-        eff = law.get("시행일자")
-
-        html.append(f"<hr><h3>{name} ({law_type})</h3>")
-        html.append(f"<p>시행일자: {eff} / MST: {mst}</p>")
-
-        try:
-            law_json = get_law_text(mst)
-            articles = extract_articles(law_json, keyword)
-        except Exception as e:
-            html.append(f"<p style='color:red;'>조회 오류: {e}</p>")
-            continue
-
-        if not articles:
-            html.append("<p>키워드가 포함된 조문을 찾지 못했습니다.</p>")
-            continue
-
-        for a in articles:
-            title = a.get("조문제목") or ""
-            no = a.get("조문번호") or ""
-            body = a.get("전체본문") or ""
-
-            html.append(
-                "<div style='border:1px solid #ddd; padding:16px; margin:12px 0; border-radius:8px;'>"
-            )
-            html.append(f"<h4>제{no}조 {title}</h4>")
-            html.append(f"<pre style='white-space:pre-wrap; line-height:1.5;'>{body}</pre>")
-            html.append("</div>")
-
-    html.append("</body></html>")
-    return "\n".join(html)
-
-
-@app.get("/api/find")
-def find_articles_api(
-    law_name: str = Query(...),
-    keyword: str = Query(...),
-):
-    laws = search_laws(law_name)
-    related = classify_related_laws(laws, law_name)
-
-    output = []
-
-    for law in related:
-        mst = law.get("법령일련번호")
-        law_json = get_law_text(mst)
-        output.append({
-            "law": law,
-            "matched_articles": extract_articles(law_json, keyword),
-        })
-
-    return {
-        "query": {
-            "law_name": law_name,
-            "keyword": keyword,
-        },
-        "results": output,
-    }
+    return HTML
