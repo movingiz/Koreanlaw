@@ -158,6 +158,66 @@ function renderHang(hang, keyword) {
   return html;
 }
 
+function splitDefinitionText(text) {
+  const t = cleanText(text);
+
+  // "1. ... 2. ... 3. ..." 형식 분리
+  const parts = t.split(/(?=\s\d+\.\s)/g)
+    .map(x => x.trim())
+    .filter(Boolean);
+
+  if (parts.length >= 2) return parts;
+
+  return [t];
+}
+
+function renderHangEnhanced(hang, keyword) {
+  const hangNo = hang["항번호"] || "";
+  const hangText = hang["항내용"] || "";
+  const hoList = asList(hang["호"]);
+
+  let html = `
+    <details>
+      <summary>제${esc(hangNo)}항 <span class="pill">${esc(shortLabel(hangText || flatten(hang), keyword))}</span></summary>
+  `;
+
+  // 호 구조가 있으면 호별로 분리 표시
+  if (hoList.length > 0) {
+    if (hangText) {
+      html += `<pre>${esc(cleanText(hangText))}</pre>`;
+    }
+
+    for (const ho of hoList) {
+      html += renderHo(ho, keyword);
+    }
+  }
+
+  // 호 구조가 없는데 정의 조항처럼 "1. 2. 3."이 줄글로 들어온 경우 분리
+  else {
+    const defs = splitDefinitionText(hangText);
+
+    if (defs.length > 1) {
+      for (const d of defs) {
+        const m = d.match(/^(\d+)\.\s*(.*)$/);
+        const num = m ? m[1] : "";
+        const content = m ? m[2] : d;
+
+        html += `
+          <details class="sub">
+            <summary>${num ? `제${esc(num)}호` : "정의"} <span class="pill">${esc(shortLabel(content, keyword))}</span></summary>
+            <pre>${esc(cleanText(content))}</pre>
+          </details>
+        `;
+      }
+    } else {
+      html += `<pre>${esc(cleanText(hangText || flatten(hang)))}</pre>`;
+    }
+  }
+
+  html += `</details>`;
+  return html;
+}
+
 function renderArticle(art, keyword) {
   const no = art["조문번호"] || "";
   const title = art["조문제목"] || "";
@@ -166,16 +226,34 @@ function renderArticle(art, keyword) {
 
   let html = `<div class="article">
     <div class="article-title">제${esc(no)}조${title ? `(${esc(title)})` : ""}</div>
-    <details>
-      <summary>조문 본문 <span class="pill">${esc(shortLabel(body || flatten(art), keyword))}</span></summary>
-      <pre>${esc(cleanText(body))}</pre>
-    </details>
   `;
 
-  if (hangList.length > 0) {
-    for (const hang of hangList) html += renderHang(hang, keyword);
-  } else {
-    html += `<p class="muted">항 구조 없음</p>`;
+  // 항이 없으면 조문 본문을 그대로 표시
+  if (hangList.length === 0) {
+    html += `
+      <details open>
+        <summary>조문 내용 <span class="pill">${esc(shortLabel(body || flatten(art), keyword))}</span></summary>
+        <pre>${esc(cleanText(body))}</pre>
+      </details>
+    `;
+  }
+
+  // 항이 1개뿐인 경우: 조문 본문이 별도 실체를 가질 수 있으므로 표시
+  else if (hangList.length === 1) {
+    html += `
+      <details>
+        <summary>조문 본문 <span class="pill">${esc(shortLabel(body || flatten(art), keyword))}</span></summary>
+        <pre>${esc(cleanText(body))}</pre>
+      </details>
+    `;
+    html += renderHangEnhanced(hangList[0], keyword);
+  }
+
+  // 항이 여러 개인 경우: 조문 본문은 제목과 중복되는 경우가 많으므로 숨김
+  else {
+    for (const hang of hangList) {
+      html += renderHangEnhanced(hang, keyword);
+    }
   }
 
   html += `</div>`;
