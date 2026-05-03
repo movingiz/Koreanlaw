@@ -278,28 +278,50 @@ function renderTopSummary(allResults, lawName, keyword) {
 }
 
 function compactResultsForAi(allResults) {
-  return allResults.map(r => {
-    return {
-      법령명: r.name,
-      매칭조문: r.articles.map(a => {
-        const hangList = asList(a["항"]);
-        return {
-          조문: `제${a["조문번호"] || ""}조${a["조문제목"] ? `(${a["조문제목"]})` : ""}`,
-          항목구조: hangList.map(h => {
-            const hoList = asList(h["호"]);
-            return {
-              항: `제${h["항번호"] || ""}항`,
-              항요지: cleanText(h["항내용"] || "").slice(0, 240),
-              호: hoList.map(ho => ({
-                호: `제${ho["호번호"] || ""}호`,
-                호요지: cleanText(ho["호내용"] || "").slice(0, 180)
-              })).slice(0, 20)
-            };
-          }).slice(0, 20)
-        };
-      }).slice(0, 20)
-    };
-  });
+  const blocks = [];
+
+  for (const r of allResults) {
+    const lines = [];
+    lines.push(`[${r.name}]`);
+
+    for (const a of r.articles) {
+      const articleTitle = `제${a["조문번호"] || ""}조${a["조문제목"] ? `(${a["조문제목"]})` : ""}`;
+      lines.push(articleTitle);
+
+      const hangList = asList(a["항"]);
+
+      if (hangList.length === 0) {
+        const body = cleanText(a["조문내용"] || "");
+        if (body) lines.push(`- 조문내용: ${body}`);
+      }
+
+      for (const h of hangList) {
+        const hangNo = h["항번호"] || "";
+        const hangText = cleanText(h["항내용"] || "");
+        if (hangText) lines.push(`- 제${hangNo}항: ${hangText}`);
+
+        const hoList = asList(h["호"]);
+        for (const ho of hoList) {
+          const hoNo = ho["호번호"] || "";
+          const hoText = cleanText(ho["호내용"] || "");
+          if (hoText) lines.push(`  · 제${hoNo}호: ${hoText}`);
+
+          const mokList = asList(ho["목"]);
+          for (const mok of mokList) {
+            const mokNo = mok["목번호"] || "";
+            const mokText = cleanText(mok["목내용"] || "");
+            if (mokText) lines.push(`    - ${mokNo}목: ${mokText}`);
+          }
+        }
+      }
+
+      lines.push("");
+    }
+
+    blocks.push(lines.join("\n"));
+  }
+
+  return blocks.join("\n\n");
 }
 
 async function generateAiSummary(lawName, keyword, allResults) {
@@ -458,10 +480,10 @@ async def ai_summary(request: Request):
                 "Content-Type": "application/json",
             },
             json={
-                "model": "gpt-5.5",
+                "model": "gpt-5.2",
                 "input": prompt,
             },
-            timeout=60,
+            timeout=120,
         )
         r.raise_for_status()
         data = r.json()
