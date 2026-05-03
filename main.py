@@ -1,5 +1,7 @@
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+import os
+import requests
 
 app = FastAPI(title="Korean Law Finder v1.1")
 
@@ -33,7 +35,6 @@ HTML = r"""
 
   <div class="box">
     <p>API 키(OC)<br><input id="oc" placeholder="예: movingizapi" /></p>
-    <p>OpenAI API 키(선택, AI 요약용)<br><input id="openaiKey" type="password" placeholder="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" /></p>
     <p>법령명<br><input id="lawName" value="도로교통법" /></p>
     <p>키워드<br><input id="keyword" value="어린이" /></p>
     <button onclick="runSearch()">검색</button>
@@ -301,67 +302,28 @@ function compactResultsForAi(allResults) {
   });
 }
 
-async function generateAiSummary(openaiKey, lawName, keyword, allResults) {
+async function generateAiSummary(lawName, keyword, allResults) {
   const compact = compactResultsForAi(allResults);
 
-  const prompt = `
-다음은 국가법령정보 API에서 검색한 법령 조문 결과입니다.
-
-검색 법령명: ${lawName}
-검색 키워드: ${keyword}
-
-자료:
-${JSON.stringify(compact, null, 2)}
-
-요청:
-1. 검색 결과의 전체 조문 구조를 한국어로 간결하게 설명하세요.
-2. 법률, 시행령, 시행규칙이 각각 어떤 역할을 하는지 구분해서 설명하세요.
-3. 하위규범이 법률 조항을 어떻게 구체화하는지 설명하세요.
-4. 실무자가 우선 확인해야 할 조문을 3~7개 정도 골라 이유를 설명하세요.
-5. 없는 내용은 추정하지 말고, 제공된 검색 결과 기준으로만 쓰세요.
-6. 답변은 다음 형식으로 작성하세요.
-
-[전체 요약]
-...
-
-[법률-시행령-시행규칙 연계]
-...
-
-[우선 확인 조문]
-- ...
-`;
-
-  const res = await fetch("https://api.openai.com/v1/responses", {
+  const res = await fetch("/ai-summary", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${openaiKey}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      model: "gpt-5.2",
-      input: prompt
+      lawName,
+      keyword,
+      results: compact
     })
   });
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`OpenAI API 오류 ${res.status}: ${text.slice(0, 500)}`);
-  }
-
   const data = await res.json();
 
-  if (data.output_text) return data.output_text;
-
-  // output_text가 없을 경우 대비
-  try {
-    return data.output
-      .flatMap(x => x.content || [])
-      .map(c => c.text || "")
-      .join("\n")
-      .trim();
-  } catch {
-    return JSON.stringify(data, null, 2);
+  if (!res.ok) {
+    throw new Error(data.error || `AI 요약 오류 ${res.status}`);
   }
+
+  return data.summary;
 }
 
 function renderAiSummary(text) {
@@ -372,7 +334,6 @@ function renderAiSummary(text) {
     </div>
   `;
 }
-
 async function runSearch() {
   const oc = document.getElementById("oc").value.trim();
   const lawName = document.getElementById("lawName").value.trim();
@@ -426,26 +387,27 @@ async function runSearch() {
         for (const art of articles) html += renderArticle(art, keyword);
       }
     }
+
     results.innerHTML = html;
     summary.innerHTML = renderTopSummary(allResults, lawName, keyword);
-    status.textContent = "AI 요약 생성 여부 확인 중...";
-    
-    const openaiKey = document.getElementById("openaiKey").value.trim();
-    
-    if (openaiKey) {
-    status.textContent = "AI 요약 생성 중...";
-    const aiSummary = await generateAiSummary(openaiKey, lawName, keyword, allResults);
-    summary.innerHTML = renderAiSummary(aiSummary);
-    status.textContent = "완료";
-    } else {
-    status.textContent = "완료 - OpenAI API 키를 입력하면 상단 요약이 AI 요약으로 바뀝니다.";
-    }
-    
+
+    try {
+      status.textContent = "AI 요약 생성 중...";
+      const aiSummary = await generateAiSummary(lawName, keyword, allResults);
+      summary.innerHTML = renderAiSummary(aiSummary);
+      status.textContent = "완료";
     } catch (e) {
+      status.textContent = "조문 검색 완료 / AI 요약 실패";
+      summary.innerHTML = renderTopSummary(allResults, lawName, keyword) +
+        `<div class="box"><p class="error">AI 요약 오류: ${esc(e.message)}</p></div>`;
+    }
+
+  } catch (e) {
     status.innerHTML = `<span class="error">오류: ${esc(e.message)}</span>
-      <p class="muted">브라우저에서 법제처 API 직접 호출이 CORS 또는 네트워크 정책에 막혔을 수 있습니다.</p>`;
+      <p class="muted">법제처 API 호출 또는 조문 파싱 중 오류가 발생했습니다.</p>`;
   }
 }
+
 </script>
 </body>
 </html>
@@ -454,3 +416,64 @@ async function runSearch() {
 @app.get("/", response_class=HTMLResponse)
 def home():
     return HTML
+
+@app.post("/ai-summary")
+async def ai_summary(request: Request):
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        return JSONResponse(
+            {"error": "OPENAI_API_KEY environment variable is missing."},
+            status_code=500,
+        )
+
+    payload = await request.json()
+
+    law_name = payload.get("lawName", "")
+    keyword = payload.get("keyword", "")
+    results = payload.get("results", [])
+
+    prompt = f"""
+다음은 국가법령정보 API에서 검색한 법령 조문 결과입니다.
+
+검색 법령명: {law_name}
+검색 키워드: {keyword}
+
+자료:
+{results}
+
+요청:
+1. 검색 결과의 전체 조문 구조를 한국어로 간결하게 설명하세요.
+2. 법률, 시행령, 시행규칙이 각각 어떤 역할을 하는지 구분해서 설명하세요.
+3. 하위규범이 법률 조항을 어떻게 구체화하는지 설명하세요.
+4. 실무자가 우선 확인해야 할 조문을 3~7개 정도 골라 이유를 설명하세요.
+5. 없는 내용은 추정하지 말고, 제공된 검색 결과 기준으로만 쓰세요.
+"""
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-5.5",
+                "input": prompt,
+            },
+            timeout=60,
+        )
+        r.raise_for_status()
+        data = r.json()
+
+        text = data.get("output_text")
+        if not text:
+            text = ""
+            for item in data.get("output", []):
+                for content in item.get("content", []):
+                    text += content.get("text", "")
+
+        return {"summary": text}
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
