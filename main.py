@@ -325,27 +325,57 @@ function compactResultsForAi(allResults) {
 }
 
 async function generateAiSummary(lawName, keyword, allResults) {
-  const compact = compactResultsForAi(allResults);
+  const perLawSummaries = [];
 
-  const res = await fetch("/ai-summary", {
+  for (const r of allResults) {
+    const compact = compactResultsForAi([r]);
+
+    const res = await fetch("/ai-summary", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        mode: "single",
+        lawName,
+        keyword,
+        lawTitle: r.name,
+        results: compact
+      })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.error || `AI 요약 오류 ${res.status}`);
+    }
+
+    perLawSummaries.push({
+      lawTitle: r.name,
+      summary: data.summary
+    });
+  }
+
+  const finalRes = await fetch("/ai-summary", {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
+      mode: "combine",
       lawName,
       keyword,
-      results: compact
+      results: perLawSummaries
     })
   });
 
-  const data = await res.json();
+  const finalData = await finalRes.json();
 
-  if (!res.ok) {
-    throw new Error(data.error || `AI 요약 오류 ${res.status}`);
+  if (!finalRes.ok) {
+    throw new Error(finalData.error || `AI 통합 요약 오류 ${finalRes.status}`);
   }
 
-  return data.summary;
+  return finalData.summary;
 }
 
 function renderAiSummary(text) {
@@ -438,7 +468,7 @@ async function runSearch() {
 @app.get("/", response_class=HTMLResponse)
 def home():
     return HTML
-
+  
 @app.post("/ai-summary")
 async def ai_summary(request: Request):
     api_key = os.getenv("OPENAI_API_KEY")
@@ -451,25 +481,56 @@ async def ai_summary(request: Request):
 
     payload = await request.json()
 
+    mode = payload.get("mode", "single")
     law_name = payload.get("lawName", "")
     keyword = payload.get("keyword", "")
-    results = payload.get("results", [])
+    law_title = payload.get("lawTitle", "")
+    results = payload.get("results", "")
 
-    prompt = f"""
-다음은 국가법령정보 API에서 검색한 법령 조문 결과입니다.
+    if mode == "combine":
+        prompt = f"""
+다음은 국가법령정보 API 검색 결과를 법령별로 나누어 요약한 내용입니다.
 
 검색 법령명: {law_name}
 검색 키워드: {keyword}
+
+법령별 요약:
+{results}
+
+요청:
+1. 전체 검색 결과의 조문 구조를 간결하게 설명하세요.
+2. 법률, 시행령, 시행규칙이 어떻게 역할을 분담하는지 설명하세요.
+3. 하위규범이 상위 법률 조항을 어떻게 구체화하는지 설명하세요.
+4. 실무자가 우선 확인해야 할 조문 또는 쟁점을 3~7개로 정리하세요.
+5. 제공된 자료에 없는 내용은 추정하지 마세요.
+
+형식:
+[전체 요약]
+...
+
+[법률-시행령-시행규칙 연계]
+...
+
+[우선 확인 포인트]
+- ...
+"""
+    else:
+        prompt = f"""
+다음은 국가법령정보 API에서 검색한 특정 법령의 조문 결과입니다.
+
+검색 법령명: {law_name}
+검색 키워드: {keyword}
+현재 요약 대상: {law_title}
 
 자료:
 {results}
 
 요청:
-1. 검색 결과의 전체 조문 구조를 한국어로 간결하게 설명하세요.
-2. 법률, 시행령, 시행규칙이 각각 어떤 역할을 하는지 구분해서 설명하세요.
-3. 하위규범이 법률 조항을 어떻게 구체화하는지 설명하세요.
-4. 실무자가 우선 확인해야 할 조문을 3~7개 정도 골라 이유를 설명하세요.
-5. 없는 내용은 추정하지 말고, 제공된 검색 결과 기준으로만 쓰세요.
+1. 이 법령 안에서 검색 키워드와 관련된 조문 구조를 설명하세요.
+2. 조문 내용을 그대로 반복하지 말고, 항·호 구조와 규율 내용을 요약하세요.
+3. 실무자가 봐야 할 핵심 조문을 골라 이유를 설명하세요.
+4. 제공된 자료에 없는 내용은 추정하지 마세요.
+5. 700자 이내로 작성하세요.
 """
 
     try:
